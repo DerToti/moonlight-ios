@@ -17,7 +17,6 @@
 
 @implementation DiscoveryManager {
     NSMutableArray* _hostQueue;
-    NSMutableArray* _discoveredHosts;
     id<DiscoveryCallback> _callback;
     MDNSManager* _mdnsMan;
     NSOperationQueue* _opQueue;
@@ -34,16 +33,10 @@
     _callback = callback;
     shouldDiscover = NO;
     _hostQueue = [NSMutableArray array];
-    DataManager* dataMan = [[DataManager alloc] init];
-    for (Host* host in hosts)
+    for (TemporaryHost* host in hosts)
     {
-        if (![self addHostToDiscovery:host])
-        {
-            // Remove the duplicate host from the database
-            [dataMan removeHost:host];
-        }
+        [self addHostToDiscovery:host];
     }
-    [dataMan saveData];
     [_callback updateAllHosts:_hostQueue];
     
     _opQueue = [[NSOperationQueue alloc] init];
@@ -54,20 +47,18 @@
     return self;
 }
 
-- (void) discoverHost:(NSString *)hostAddress withCallback:(void (^)(Host *, NSString*))callback {
+- (void) discoverHost:(NSString *)hostAddress withCallback:(void (^)(TemporaryHost *, NSString*))callback {
     HttpManager* hMan = [[HttpManager alloc] initWithHost:hostAddress uniqueId:_uniqueId deviceName:deviceName cert:_cert];
     ServerInfoResponse* serverInfoResponse = [[ServerInfoResponse alloc] init];
     [hMan executeRequestSynchronously:[HttpRequest requestForResponse:serverInfoResponse withUrlRequest:[hMan newServerInfoRequest] fallbackError:401 fallbackRequest:[hMan newHttpServerInfoRequest]]];
     
-    Host* host = nil;
+    TemporaryHost* host = nil;
     if ([serverInfoResponse isStatusOk]) {
-        DataManager* dataMan = [[DataManager alloc] init];
-        host = [dataMan createHost];
+        host = [[TemporaryHost alloc] init];
         host.activeAddress = host.address = hostAddress;
         host.online = YES;
         [serverInfoResponse populateHost:host];
         if (![self addHostToDiscovery:host]) {
-            [dataMan removeHost:host];
             callback(nil, @"Host already added");
         } else {
             callback(host, nil);
@@ -82,7 +73,7 @@
     Log(LOG_I, @"Starting discovery");
     shouldDiscover = YES;
     [_mdnsMan searchForHosts];
-    for (Host* host in _hostQueue) {
+    for (TemporaryHost* host in _hostQueue) {
         [_opQueue addOperation:[self createWorkerForHost:host]];
     }
 }
@@ -103,7 +94,7 @@
     Log(LOG_I, @"All discovery workers stopped");
 }
 
-- (BOOL) addHostToDiscovery:(Host *)host {
+- (BOOL) addHostToDiscovery:(TemporaryHost *)host {
     if (host.uuid.length > 0 && ![self isHostInDiscovery:host]) {
         [_hostQueue addObject:host];
         if (shouldDiscover) {
@@ -114,7 +105,7 @@
     return NO;
 }
 
-- (void) removeHostFromDiscovery:(Host *)host {
+- (void) removeHostFromDiscovery:(TemporaryHost *)host {
     for (DiscoveryWorker* worker in [_opQueue operations]) {
         if ([worker getHost] == host) {
             [worker cancel];
@@ -126,9 +117,8 @@
 // Override from MDNSCallback
 - (void)updateHosts:(NSArray *)hosts {
     dispatch_async(dispatch_get_global_queue(DISPATCH_QUEUE_PRIORITY_DEFAULT, 0), ^{
-        DataManager* dataMan = [[DataManager alloc] init];
         // Discover the hosts before adding to eliminate duplicates
-        for (Host* host in hosts) {
+        for (TemporaryHost* host in hosts) {
             Log(LOG_I, @"Found host through MDNS: %@:", host.name);
             // Since this is on a background thread, we do not need to use the opQueue
             DiscoveryWorker* worker = (DiscoveryWorker*)[self createWorkerForHost:host];
@@ -138,16 +128,14 @@
                 [_callback updateAllHosts:_hostQueue];
             } else {
                 Log(LOG_I, @"Not adding host to discovery: %@", host.name);
-                [dataMan removeHost:host];
             }
         }
-        [dataMan saveData];
     });
 }
 
-- (BOOL) isHostInDiscovery:(Host*)host {
+- (BOOL) isHostInDiscovery:(TemporaryHost*)host {
     for (int i = 0; i < _hostQueue.count; i++) {
-        Host* discoveredHost = [_hostQueue objectAtIndex:i];
+        TemporaryHost* discoveredHost = [_hostQueue objectAtIndex:i];
         if (discoveredHost.uuid.length > 0 && [discoveredHost.uuid isEqualToString:host.uuid]) {
             return YES;
         }
@@ -155,7 +143,7 @@
     return NO;
 }
 
-- (NSOperation*) createWorkerForHost:(Host*)host {
+- (NSOperation*) createWorkerForHost:(TemporaryHost*)host {
     DiscoveryWorker* worker = [[DiscoveryWorker alloc] initWithHost:host uniqueId:_uniqueId cert:_cert];
     return worker;
 }
